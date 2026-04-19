@@ -1,5 +1,9 @@
-// Pure Canvas boxplot renderer — Phase 5 minimal set.
-// Phase 6-8 will extend: tooltip, MA toggles, regression band, residual highlight.
+// Pure Canvas boxplot renderer.
+
+const CANDLE_WIDTH_RATIO = 0.78;   // body/slot 비율 — 간격 좁게
+const CANDLE_WIDTH_MAX = 30;       // body 최대 픽셀 폭
+const CANDLE_WIDTH_MIN = 4;
+const X_LABEL_GAP_PX = 6;          // 라벨 사이 최소 여백
 
 const COLORS = {
   body: '#6b96c8',
@@ -114,7 +118,10 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
   // X slots
   const n = candles.length;
   const slotW = plotW / n;
-  const bodyW = Math.max(4, Math.min(18, slotW * 0.55));
+  const bodyW = Math.max(
+    CANDLE_WIDTH_MIN,
+    Math.min(CANDLE_WIDTH_MAX, slotW * CANDLE_WIDTH_RATIO)
+  );
 
   // Prediction band (drawn under candles)
   if (opts.regression) {
@@ -227,11 +234,54 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
     ctx.stroke();
   });
 
-  // X labels: first, last, and current live bucket
+  // X labels: pick stride + format so labels don't overlap.
   ctx.fillStyle = '#444';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.font = '10px "Courier New"';
-  if (n >= 1) ctx.fillText(candles[0].key, padL + slotW * 0.5, padT + plotH + 4);
-  if (n >= 2) ctx.fillText(candles[n - 1].key, padL + slotW * (n - 0.5), padT + plotH + 4);
+  const unit = opts.unit || 'day';
+  const { format, stride } = pickLabelPlan(ctx, candles, slotW, unit);
+  for (let i = 0; i < n; i++) {
+    const forced = (i === 0 || i === n - 1);
+    if (!forced && i % stride !== 0) continue;
+    const label = format(candles[i].key);
+    ctx.fillText(label, padL + slotW * (i + 0.5), padT + plotH + 4);
+  }
+}
+
+function fmtFull(key) { return key; }
+function fmtShort(key, unit) {
+  if (unit === 'day') {
+    // YYYY-MM-DD → MM-DD
+    return key.length >= 10 ? key.slice(5) : key;
+  }
+  if (unit === 'week') {
+    // YYYY-Www → Www
+    const i = key.indexOf('-W');
+    return i >= 0 ? key.slice(i + 1) : key;
+  }
+  if (unit === 'month') {
+    // YYYY-MM → MM
+    return key.length >= 7 ? key.slice(5) : key;
+  }
+  return key;
+}
+
+function pickLabelPlan(ctx, candles, slotW, unit) {
+  if (candles.length === 0) return { format: fmtFull, stride: 1 };
+  const sample = candles[Math.floor(candles.length / 2)].key;
+  const fullW = ctx.measureText(fmtFull(sample)).width;
+  const shortW = ctx.measureText(fmtShort(sample, unit)).width;
+
+  // Try full first.
+  const strideFull = Math.max(1, Math.ceil((fullW + X_LABEL_GAP_PX) / slotW));
+  if (strideFull === 1) return { format: fmtFull, stride: 1 };
+
+  // Fall back to short and recompute.
+  const strideShort = Math.max(1, Math.ceil((shortW + X_LABEL_GAP_PX) / slotW));
+  if (strideShort <= strideFull) {
+    return { format: (k) => fmtShort(k, unit), stride: strideShort };
+  }
+  // short was somehow worse — stick with full at strideFull.
+  return { format: fmtFull, stride: strideFull };
 }

@@ -1,6 +1,8 @@
 // Single EventSource per station. Multiple views (grid cell + detail tab)
 // share the same connection via a subscriber list.
 
+import { recordActivity } from './activity.js';
+
 const streams = new Map(); // station -> { es, subs:Set<fn> }
 
 export function subscribe(station, onEvent) {
@@ -12,6 +14,7 @@ export function subscribe(station, onEvent) {
     const dispatch = (type, ev) => {
       try {
         const data = JSON.parse(ev.data);
+        if (type === 'candle_update') recordActivity(station);
         entry.subs.forEach(fn => { try { fn(data); } catch (e) { console.warn(e); } });
       } catch (_) { /* ignore */ }
     };

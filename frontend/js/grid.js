@@ -1,13 +1,17 @@
 import { getChart, getStations } from './api.js';
 import { renderCandleChart } from './chart.js';
 import { subscribe } from './sse.js';
+import { subscribeActive } from './activity.js';
 
 const state = {
   stations: [],
   chartDataByStation: new Map(),  // station -> {frozen,live,last_sampled_at}
   unsubFns: [],
   idleTimer: null,
+  unsubActive: null,
 };
+
+const GRID_UNIT = 'day';  // grid is fixed to day view in v0.1
 
 function fmtIdle(seconds) {
   if (seconds == null) return '—';
@@ -71,8 +75,19 @@ function redrawCell(station) {
   const data = state.chartDataByStation.get(station.station_name);
   if (!data) return;
   const canvas = el.querySelector('canvas');
-  renderCandleChart(canvas, data, { ma: [7] });
+  renderCandleChart(canvas, data, { ma: [7], unit: GRID_UNIT });
   refreshCellStats(el, station, data);
+}
+
+function applyActive(next, prev) {
+  if (prev) {
+    const prevEl = document.getElementById(cellId(prev));
+    if (prevEl) prevEl.classList.remove('active');
+  }
+  if (next) {
+    const nextEl = document.getElementById(cellId(next));
+    if (nextEl) nextEl.classList.add('active');
+  }
 }
 
 function applyLiveUpdate(stationName, payload) {
@@ -137,6 +152,10 @@ export async function renderGrid(root) {
 
   restartIdleTimer();
 
+  // Active station border toggle
+  if (state.unsubActive) state.unsubActive();
+  state.unsubActive = subscribeActive(applyActive);
+
   // Re-render on window resize.
   window.addEventListener('resize', () => state.stations.forEach(redrawCell), { passive: true });
 }
@@ -145,4 +164,5 @@ export function teardownGrid() {
   state.unsubFns.forEach(fn => fn());
   state.unsubFns = [];
   if (state.idleTimer) { clearInterval(state.idleTimer); state.idleTimer = null; }
+  if (state.unsubActive) { state.unsubActive(); state.unsubActive = null; }
 }

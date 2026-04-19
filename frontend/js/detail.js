@@ -1,6 +1,7 @@
 import { getChart, runRegression } from './api.js';
 import { renderCandleChart } from './chart.js';
 import { subscribe } from './sse.js';
+import { subscribeActive } from './activity.js';
 
 // Per-station detail state.
 const states = new Map(); // station -> {root, unsub, data, opts, canvas, tooltip, cleanupFns[]}
@@ -11,6 +12,7 @@ export async function renderDetail(root, station) {
   const st = {
     root,
     unsub: null,
+    unsubActive: null,
     data: null,
     opts: { unit: 'day', range: 'all', ma: [7, 30] },
     canvas: null,
@@ -18,6 +20,7 @@ export async function renderDetail(root, station) {
     cleanupFns: [],
     regression: null,
     regressionParams: { target: 'median', degree: 2, band_n: 2.0, percentile: 95.0 },
+    candlesFieldset: null,
   };
   states.set(station, st);
 
@@ -47,7 +50,7 @@ export async function renderDetail(root, station) {
         </span>
       </div>
     </fieldset>
-    <fieldset style="flex:1;display:flex;flex-direction:column;min-height:460px">
+    <fieldset data-candles-fs style="flex:1;display:flex;flex-direction:column;min-height:460px">
       <legend>Candles</legend>
       <div class="canvas-wrap" style="flex:1;position:relative;min-height:420px">
         <canvas></canvas>
@@ -88,6 +91,7 @@ export async function renderDetail(root, station) {
 
   st.canvas = root.querySelector('canvas');
   st.tooltip = root.querySelector('.tooltip');
+  st.candlesFieldset = root.querySelector('[data-candles-fs]');
 
   // Wire controls
   root.querySelector('[data-unit]').addEventListener('change', async (e) => {
@@ -137,6 +141,14 @@ export async function renderDetail(root, station) {
 
   // SSE live updates
   st.unsub = subscribe(station, (evt) => applyLiveUpdate(station, evt));
+
+  // Active station border toggle on the Candles fieldset
+  st.unsubActive = subscribeActive((active) => {
+    const fs = st.candlesFieldset;
+    if (!fs) return;
+    if (active === station) fs.classList.add('active');
+    else fs.classList.remove('active');
+  });
 }
 
 async function loadAndRender(station) {
@@ -159,7 +171,7 @@ function draw(station) {
   const st = states.get(station);
   if (!st || !st.canvas || !st.data) return;
   const regression = st.regression && st.regression.unit === st.opts.unit ? st.regression : null;
-  renderCandleChart(st.canvas, st.data, { ma: st.opts.ma, regression });
+  renderCandleChart(st.canvas, st.data, { ma: st.opts.ma, regression, unit: st.opts.unit });
   // Record candle hit regions for tooltip lookup
   computeHitRegions(station);
 }
@@ -294,6 +306,7 @@ export function teardownDetail(station) {
   const st = states.get(station);
   if (!st) return;
   if (st.unsub) st.unsub();
+  if (st.unsubActive) st.unsubActive();
   st.cleanupFns.forEach(fn => fn());
   states.delete(station);
 }

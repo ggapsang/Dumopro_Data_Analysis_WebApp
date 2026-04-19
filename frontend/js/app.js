@@ -1,6 +1,7 @@
 import { renderGrid, teardownGrid } from './grid.js';
 import { renderDetail, teardownDetail } from './detail.js';
 import { renderSidebarSettings } from './sidebar.js';
+import { subscribeActive } from './activity.js';
 
 const tabs = new Map(); // id -> {label, kind, station?, el, contentRenderer, contentTeardown}
 let activeId = null;
@@ -96,6 +97,20 @@ function openDetail(stationName) {
       settingsRoot.innerHTML = `<span class="err">Settings load failed</span>`;
       console.error(err);
     }
+  }
+
+  // Active station indicator (bottom of sidebar)
+  const activeEl = document.getElementById('active-station');
+  if (activeEl) {
+    subscribeActive((next) => {
+      if (next) {
+        activeEl.textContent = next;
+        activeEl.classList.remove('idle');
+      } else {
+        activeEl.textContent = '(없음)';
+        activeEl.classList.add('idle');
+      }
+    });
   }
 
   document.addEventListener('open-detail', (e) => openDetail(e.detail.station));

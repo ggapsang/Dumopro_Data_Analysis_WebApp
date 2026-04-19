@@ -145,6 +145,27 @@ a { color: #000000; }
   color: #888;
 }
 
+/* Active station highlight (currently receiving samples). */
+.cell.active {
+  border: 2px solid #a00000;
+  padding: 3px 5px;  /* offset 1px so content doesn't shift when toggling */
+}
+
+fieldset.active {
+  border: 2px solid #a00000;
+  padding: 5px 9px;  /* offset 1px */
+}
+
+#active-station {
+  font: 12px "Courier New", monospace;
+  font-weight: bold;
+}
+
+#active-station.idle {
+  color: #888;
+  font-weight: normal;
+}
+
 .cell-header {
   display: flex;
   justify-content: space-between;
