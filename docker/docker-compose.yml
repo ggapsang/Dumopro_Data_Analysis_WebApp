@@ -1,0 +1,66 @@
+name: dumopro
+
+services:
+
+  dumopro-redis:
+    image: redis:7-alpine
+    container_name: dumopro-redis
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./redis.conf:/etc/redis/redis.conf:ro
+      - dumopro-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - gw-net
+
+  dumopro-poller:
+    build:
+      context: ..
+      dockerfile: apps/poller/Dockerfile
+    container_name: dumopro-poller
+    environment:
+      PG_DSN: "postgresql://gw_reader:dev_reader_pw@postgres:5432/gateway_db"
+      REDIS_URL: "redis://dumopro-redis:6379/0"
+      POLL_INTERVAL_SEC: "1.5"
+      POLL_BATCH_LIMIT: "500"
+      MEASUREMENT_TYPE: "dust_concentration"
+      POLLER_HEALTH_PORT: "9106"
+    ports:
+      - "9106:9106"
+    depends_on:
+      dumopro-redis:
+        condition: service_healthy
+    networks:
+      - gw-net
+
+  dumopro-api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    container_name: dumopro-api
+    environment:
+      REDIS_URL: "redis://dumopro-redis:6379/0"
+      API_PORT: "9105"
+    ports:
+      - "9105:9105"
+    depends_on:
+      dumopro-redis:
+        condition: service_healthy
+      dumopro-poller:
+        condition: service_healthy
+    networks:
+      - gw-net
+
+volumes:
+  dumopro-redis-data:
+
+networks:
+  gw-net:
+    external: true
+    name: ${GW_NET_NAME:-socketdaim_gw-net}
