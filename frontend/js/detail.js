@@ -171,7 +171,12 @@ function draw(station) {
   const st = states.get(station);
   if (!st || !st.canvas || !st.data) return;
   const regression = st.regression && st.regression.unit === st.opts.unit ? st.regression : null;
-  renderCandleChart(st.canvas, st.data, { ma: st.opts.ma, regression, unit: st.opts.unit });
+  renderCandleChart(st.canvas, st.data, {
+    ma: st.opts.ma,
+    regression,
+    unit: st.opts.unit,
+    scroll: true,  // 상세 탭은 캔들이 많아지면 가로 스크롤
+  });
   // Record candle hit regions for tooltip lookup
   computeHitRegions(station);
 }

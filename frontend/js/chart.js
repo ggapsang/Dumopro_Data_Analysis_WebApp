@@ -3,7 +3,13 @@
 const CANDLE_WIDTH_RATIO = 0.78;   // body/slot 비율 — 간격 좁게
 const CANDLE_WIDTH_MAX = 30;       // body 최대 픽셀 폭
 const CANDLE_WIDTH_MIN = 4;
+const MIN_SLOT_PX = 14;            // 캔들이 많을 때 최소 slot 폭 → 이보다 좁아지면 가로 스크롤
 const X_LABEL_GAP_PX = 6;          // 라벨 사이 최소 여백
+
+const Y_BREAK_RATIO = 1.3;         // absMax > normalUpper * 이 값이면 break 활성화
+const Y_BREAK_MIN_GAP = 0.02;      // normalUpper와 absMax 차이가 이 값 이상일 때만 (작은 스케일 안정화)
+const Y_BREAK_BAND_RATIO = 0.12;   // 플롯 높이의 12%를 극단치 압축 밴드로 할당
+const Y_BREAK_GAP_PX = 10;         // 끊김 마커(~~) 영역
 
 const COLORS = {
   body: '#6b96c8',
@@ -19,18 +25,35 @@ const COLORS = {
   trend: '#7030a0',
   band: 'rgba(112,48,160,0.15)',
   residualHighlight: '#ff6600',
+  breakMarker: '#000000',
 };
 
 function dpr() { return window.devicePixelRatio || 1; }
 
-function resizeForHiDPI(canvas) {
-  const r = canvas.getBoundingClientRect();
+function prepareCanvas(canvas, candleCount, padL, padR, scroll) {
+  const wrap = canvas.parentElement;
+  const wrapRect = wrap ? wrap.getBoundingClientRect() : { width: 600, height: 300 };
+  const wrapW = wrapRect.width || 1;
+  let logicalWidth;
+  if (scroll) {
+    // 캔들이 많으면 wrap보다 넓게 → 부모 .canvas-wrap 의 overflow-x 로 스크롤
+    const minContentW = padL + Math.max(1, candleCount) * MIN_SLOT_PX + padR;
+    logicalWidth = Math.max(wrapW, minContentW);
+  } else {
+    // 항상 wrap 너비에 맞춤 (가로 스크롤 없음)
+    logicalWidth = wrapW;
+  }
+  const logicalHeight = Math.max(wrapRect.height || 1, 120);
+
+  canvas.style.width = logicalWidth + 'px';
+  canvas.style.height = logicalHeight + 'px';
+
   const ratio = dpr();
-  canvas.width = Math.max(1, Math.round(r.width * ratio));
-  canvas.height = Math.max(1, Math.round(r.height * ratio));
+  canvas.width = Math.max(1, Math.round(logicalWidth * ratio));
+  canvas.height = Math.max(1, Math.round(logicalHeight * ratio));
   const ctx = canvas.getContext('2d');
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  return { ctx, width: r.width, height: r.height };
+  return { ctx, width: logicalWidth, height: logicalHeight };
 }
 
 function ma(values, window) {
@@ -55,13 +78,113 @@ function niceScale(min, max) {
   return { min: min - pad, max: max + pad };
 }
 
+function computeYPlan(candles, opts) {
+  // 1) Scan all values
+  //    - normalMax: whisker_high만 (캔들의 정상 범위)
+  //    - absMax: outliers, extremes, regression 밴드 포함 모든 값
+  let ymin = +Infinity;
+  let normalMax = -Infinity;
+  let absMax = -Infinity;
+  candles.forEach(c => {
+    const s = c.stats;
+    const lo = s.whisker_low ?? s.q1;
+    if (lo < ymin) ymin = lo;
+    const hi = s.whisker_high ?? s.q3;
+    if (hi > normalMax) normalMax = hi;
+    if (hi > absMax) absMax = hi;
+    (s.outliers || []).forEach(v => {
+      if (v < ymin) ymin = v;
+      if (v > absMax) absMax = v;
+    });
+    (s.extremes || []).forEach(v => {
+      if (v < ymin) ymin = v;
+      if (v > absMax) absMax = v;
+    });
+  });
+  if (opts.regression) {
+    (opts.regression.band_upper || []).forEach(v => {
+      if (v > absMax) absMax = v;
+    });
+    (opts.regression.band_lower || []).forEach(v => {
+      if (v < ymin) ymin = v;
+    });
+  }
+
+  // 2) Decide break mode — 박스 수염 위로 극단치가 튀어나오면 압축 밴드 사용
+  const hasOverflow = absMax > normalMax;
+  const rangeOk = (absMax - normalMax) > Y_BREAK_MIN_GAP;
+  const breakEnabled =
+    hasOverflow && rangeOk && normalMax > 0 && absMax > normalMax * Y_BREAK_RATIO;
+
+  if (!breakEnabled) {
+    const ys = niceScale(ymin, absMax);
+    return { break: false, ymin: ys.min, ymax: ys.max };
+  }
+
+  // Main region은 모든 캔들의 수염까지 포함하도록 함
+  const mainUpper = normalMax + (normalMax - ymin) * 0.08;
+  const absMaxPad = absMax + (absMax - mainUpper) * 0.05;
+  const mainMin = ymin - (normalMax - ymin) * 0.05;
+  return {
+    break: true,
+    ymin: mainMin,
+    mainUpper,
+    absMax: absMaxPad,
+  };
+}
+
+function makeYTo(plan, plotTop, plotBottom) {
+  const plotH = plotBottom - plotTop;
+  if (!plan.break) {
+    const range = plan.ymax - plan.ymin;
+    return v => plotBottom - (v - plan.ymin) / range * plotH;
+  }
+  const breakBandH = plotH * Y_BREAK_BAND_RATIO;
+  const gap = Y_BREAK_GAP_PX;
+  const mainTop = plotTop + breakBandH + gap;
+  const mainH = plotBottom - mainTop;
+  const { ymin, mainUpper, absMax } = plan;
+  const mainRange = mainUpper - ymin;
+  const extremeRange = absMax - mainUpper;
+  return v => {
+    if (v <= mainUpper) {
+      return plotBottom - (v - ymin) / mainRange * mainH;
+    }
+    const t = Math.max(0, Math.min(1, (v - mainUpper) / (extremeRange || 1)));
+    return plotTop + breakBandH - t * breakBandH;
+  };
+}
+
+function drawBreakMarker(ctx, x1, x2, y) {
+  ctx.save();
+  ctx.strokeStyle = COLORS.breakMarker;
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#ffffff';
+  // 배경: 끊김 영역을 흰색으로 깔끔하게 덮음
+  ctx.fillRect(x1, y - 5, x2 - x1, 10);
+  // 두 개의 지그재그 (~~) — Y축에 "잘라냄"을 표시
+  const step = 5;
+  for (const yy of [y - 3, y + 3]) {
+    ctx.beginPath();
+    for (let x = x1; x <= x2; x += step) {
+      const dy = ((x - x1) / step) % 2 === 0 ? 0 : -2;
+      if (x === x1) ctx.moveTo(x, yy + dy);
+      else ctx.lineTo(x, yy + dy);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function renderCandleChart(canvas, chartData, opts = {}) {
-  const { ctx, width, height } = resizeForHiDPI(canvas);
   const { frozen = [], live = null } = chartData;
 
   const candles = [];
   frozen.forEach(f => candles.push({ key: f.bucket_key, stats: f.stats, live: false }));
   if (live) candles.push({ key: live.bucket_key, stats: live.stats, live: true });
+
+  const padL = 46, padR = 8, padT = 8, padB = 22;
+  const { ctx, width, height } = prepareCanvas(canvas, candles.length, padL, padR, !!opts.scroll);
 
   if (candles.length === 0) {
     ctx.fillStyle = '#888';
@@ -70,49 +193,60 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
     return;
   }
 
-  // Determine Y range from whiskers + outliers + extremes + regression band if present.
-  let ymin = +Infinity, ymax = -Infinity;
-  candles.forEach(c => {
-    const s = c.stats;
-    ymin = Math.min(ymin, s.whisker_low ?? s.q1);
-    ymax = Math.max(ymax, s.whisker_high ?? s.q3);
-    (s.outliers || []).forEach(v => { ymin = Math.min(ymin, v); ymax = Math.max(ymax, v); });
-    (s.extremes || []).forEach(v => { ymin = Math.min(ymin, v); ymax = Math.max(ymax, v); });
-  });
-  if (opts.regression) {
-    (opts.regression.band_upper || []).forEach(v => ymax = Math.max(ymax, v));
-    (opts.regression.band_lower || []).forEach(v => ymin = Math.min(ymin, v));
-  }
-  const ys = niceScale(ymin, ymax);
-
-  const padL = 46, padR = 8, padT = 8, padB = 22;
   const plotW = Math.max(1, width - padL - padR);
   const plotH = Math.max(1, height - padT - padB);
-  const yTo = v => padT + plotH - (v - ys.min) / (ys.max - ys.min) * plotH;
+  const plotTop = padT;
+  const plotBottom = padT + plotH;
 
-  // Axis + gridlines
+  const plan = computeYPlan(candles, opts);
+  const yTo = makeYTo(plan, plotTop, plotBottom);
+
+  // Gridlines + Y labels
   ctx.strokeStyle = COLORS.grid;
   ctx.lineWidth = 1;
-  const gridSteps = 4;
   ctx.font = '10px "Courier New"';
   ctx.fillStyle = '#444';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  for (let i = 0; i <= gridSteps; i++) {
-    const v = ys.min + (ys.max - ys.min) * i / gridSteps;
-    const y = yTo(v);
+
+  if (!plan.break) {
+    const gridSteps = 4;
+    for (let i = 0; i <= gridSteps; i++) {
+      const v = plan.ymin + (plan.ymax - plan.ymin) * i / gridSteps;
+      const y = yTo(v);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + plotW, y);
+      ctx.stroke();
+      ctx.fillText(v.toFixed(3), padL - 3, y);
+    }
+  } else {
+    // Main region gridlines (4 steps from ymin to mainUpper)
+    const gridSteps = 4;
+    for (let i = 0; i <= gridSteps; i++) {
+      const v = plan.ymin + (plan.mainUpper - plan.ymin) * i / gridSteps;
+      const y = yTo(v);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + plotW, y);
+      ctx.stroke();
+      ctx.fillText(v.toFixed(3), padL - 3, y);
+    }
+    // Extreme band: single label at absMax
+    const yAbs = yTo(plan.absMax);
     ctx.beginPath();
-    ctx.moveTo(padL, y);
-    ctx.lineTo(padL + plotW, y);
+    ctx.moveTo(padL, yAbs);
+    ctx.lineTo(padL + plotW, yAbs);
     ctx.stroke();
-    ctx.fillText(v.toFixed(3), padL - 3, y);
+    ctx.fillText(plan.absMax.toFixed(3), padL - 3, yAbs);
   }
-  // Y-axis line
+
+  // Axis line
   ctx.strokeStyle = COLORS.axis;
   ctx.beginPath();
-  ctx.moveTo(padL, padT);
-  ctx.lineTo(padL, padT + plotH);
-  ctx.lineTo(padL + plotW, padT + plotH);
+  ctx.moveTo(padL, plotTop);
+  ctx.lineTo(padL, plotBottom);
+  ctx.lineTo(padL + plotW, plotBottom);
   ctx.stroke();
 
   // X slots
@@ -190,7 +324,7 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
       ctx.arc(x, yv, 2, 0, Math.PI * 2);
       ctx.fill();
     });
-    ctx.fillStyle = COLORS.extreme;
+    ctx.strokeStyle = COLORS.extreme;
     (s.extremes || []).forEach(v => {
       const yv = yTo(v);
       ctx.beginPath();
@@ -202,7 +336,7 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
     });
   });
 
-  // Trend line (drawn above candles, below MA)
+  // Trend line
   if (opts.regression && (opts.regression.trend || []).length === candles.length) {
     ctx.strokeStyle = COLORS.trend;
     ctx.lineWidth = 2;
@@ -234,7 +368,14 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
     ctx.stroke();
   });
 
-  // X labels: pick stride + format so labels don't overlap.
+  // Break marker (drawn on top, at gap between main and extreme band)
+  if (plan.break) {
+    const breakBandH = plotH * Y_BREAK_BAND_RATIO;
+    const gapMidY = plotTop + breakBandH + Y_BREAK_GAP_PX / 2;
+    drawBreakMarker(ctx, padL + 1, padL + plotW, gapMidY);
+  }
+
+  // X labels
   ctx.fillStyle = '#444';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -251,19 +392,9 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
 
 function fmtFull(key) { return key; }
 function fmtShort(key, unit) {
-  if (unit === 'day') {
-    // YYYY-MM-DD → MM-DD
-    return key.length >= 10 ? key.slice(5) : key;
-  }
-  if (unit === 'week') {
-    // YYYY-Www → Www
-    const i = key.indexOf('-W');
-    return i >= 0 ? key.slice(i + 1) : key;
-  }
-  if (unit === 'month') {
-    // YYYY-MM → MM
-    return key.length >= 7 ? key.slice(5) : key;
-  }
+  if (unit === 'day') return key.length >= 10 ? key.slice(5) : key;
+  if (unit === 'week') { const i = key.indexOf('-W'); return i >= 0 ? key.slice(i + 1) : key; }
+  if (unit === 'month') return key.length >= 7 ? key.slice(5) : key;
   return key;
 }
 
@@ -272,16 +403,9 @@ function pickLabelPlan(ctx, candles, slotW, unit) {
   const sample = candles[Math.floor(candles.length / 2)].key;
   const fullW = ctx.measureText(fmtFull(sample)).width;
   const shortW = ctx.measureText(fmtShort(sample, unit)).width;
-
-  // Try full first.
   const strideFull = Math.max(1, Math.ceil((fullW + X_LABEL_GAP_PX) / slotW));
   if (strideFull === 1) return { format: fmtFull, stride: 1 };
-
-  // Fall back to short and recompute.
   const strideShort = Math.max(1, Math.ceil((shortW + X_LABEL_GAP_PX) / slotW));
-  if (strideShort <= strideFull) {
-    return { format: (k) => fmtShort(k, unit), stride: strideShort };
-  }
-  // short was somehow worse — stick with full at strideFull.
+  if (strideShort <= strideFull) return { format: (k) => fmtShort(k, unit), stride: strideShort };
   return { format: fmtFull, stride: strideFull };
 }
