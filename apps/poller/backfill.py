@@ -101,6 +101,8 @@ async def cold_start(
 
 def _infer_ts_for_bucket(bkey: str, unit: Unit) -> datetime:
     """Best-effort timestamp inside the bucket, for score computation."""
+    if unit == "hour":
+        return datetime.strptime(bkey, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
     if unit == "day":
         return datetime.strptime(bkey, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     if unit == "week":

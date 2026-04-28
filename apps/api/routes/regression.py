@@ -20,7 +20,7 @@ from ..services.regression import (
 router = APIRouter()
 log = logging.getLogger(__name__)
 
-Unit = Literal["day", "week", "month"]
+Unit = Literal["hour", "day", "week", "month"]
 Range = Literal["90", "180", "365", "all"]
 
 

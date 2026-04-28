@@ -12,7 +12,7 @@ from ..deps import get_redis
 
 router = APIRouter()
 
-Unit = Literal["day", "week", "month"]
+Unit = Literal["hour", "day", "week", "month"]
 Range = Literal["90", "180", "365", "all"]
 
 

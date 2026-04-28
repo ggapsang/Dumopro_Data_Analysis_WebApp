@@ -15,3 +15,7 @@ def get_settings() -> Settings:
 
 def get_redis(request: Request) -> RedisClient:
     return request.app.state.redis
+
+
+def get_pool(request: Request):
+    return request.app.state.pool

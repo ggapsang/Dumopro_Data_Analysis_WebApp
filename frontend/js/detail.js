@@ -1,7 +1,9 @@
-import { getChart, runRegression } from './api.js';
-import { renderCandleChart } from './chart.js';
+import { getChart, getRawSamples, runRegression } from './api.js';
+import { renderCandleChart, renderLineChart } from './chart.js';
 import { subscribe } from './sse.js';
 import { subscribeActive } from './activity.js';
+
+const RAW_DEFAULT_LIMIT = 500;
 
 // Per-station detail state.
 const states = new Map(); // station -> {root, unsub, data, opts, canvas, tooltip, cleanupFns[]}
@@ -14,7 +16,7 @@ export async function renderDetail(root, station) {
     unsub: null,
     unsubActive: null,
     data: null,
-    opts: { unit: 'day', range: 'all', ma: [7, 30] },
+    opts: { unit: 'day', range: 'all', ma: [7, 30], rawLimit: RAW_DEFAULT_LIMIT },
     canvas: null,
     tooltip: null,
     cleanupFns: [],
@@ -30,12 +32,14 @@ export async function renderDetail(root, station) {
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
         <label>단위
           <select data-unit>
+            <option value="raw">초(raw)</option>
+            <option value="hour">시간</option>
             <option value="day" selected>일</option>
             <option value="week">주</option>
             <option value="month">월</option>
           </select>
         </label>
-        <label>기간
+        <label data-range-wrap>기간
           <select data-range>
             <option value="90">90일</option>
             <option value="180">180일</option>
@@ -43,7 +47,10 @@ export async function renderDetail(root, station) {
             <option value="all" selected>전체</option>
           </select>
         </label>
-        <span>MA:
+        <label data-raw-limit-wrap style="display:none">샘플 수
+          <input type="number" data-raw-limit value="${RAW_DEFAULT_LIMIT}" min="10" max="5000" step="100" style="width:80px">
+        </label>
+        <span data-ma-wrap>MA:
           ${MA_OPTIONS.map(w =>
             `<label style="margin-left:6px"><input type="checkbox" data-ma value="${w}"${[7,30].includes(w)?' checked':''}> ${w}</label>`
           ).join('')}
@@ -96,11 +103,19 @@ export async function renderDetail(root, station) {
   // Wire controls
   root.querySelector('[data-unit]').addEventListener('change', async (e) => {
     st.opts.unit = e.target.value;
+    updateControlVisibility(station);
     await loadAndRender(station);
   });
   root.querySelector('[data-range]').addEventListener('change', async (e) => {
     st.opts.range = e.target.value;
     await loadAndRender(station);
+  });
+  root.querySelector('[data-raw-limit]').addEventListener('change', async (e) => {
+    const v = Number(e.target.value);
+    if (!isNaN(v) && v >= 10) {
+      st.opts.rawLimit = v;
+      if (st.opts.unit === 'raw') await loadAndRender(station);
+    }
   });
   root.querySelectorAll('[data-ma]').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -151,11 +166,36 @@ export async function renderDetail(root, station) {
   });
 }
 
+function updateControlVisibility(station) {
+  const st = states.get(station);
+  if (!st) return;
+  const isRaw = st.opts.unit === 'raw';
+  const show = (sel, visible, display = 'inline-block') => {
+    const el = st.root.querySelector(sel);
+    if (el) el.style.display = visible ? display : 'none';
+  };
+  show('[data-range-wrap]', !isRaw);
+  show('[data-raw-limit-wrap]', isRaw);
+  show('[data-ma-wrap]', !isRaw);
+  // Regression panel: only meaningful for boxplot units
+  const regPanel = st.root.querySelector('#regression-panel');
+  if (regPanel) regPanel.style.display = isRaw ? 'none' : '';
+}
+
 async function loadAndRender(station) {
   const st = states.get(station);
   if (!st) return;
+
+  if (st.opts.unit === 'raw') {
+    const res = await getRawSamples(station, st.opts.rawLimit);
+    st.data = { mode: 'raw', samples: res.samples };
+    st.regression = null;
+    drawRaw(station);
+    return;
+  }
+
   const c = await getChart(station, st.opts.unit, st.opts.range);
-  st.data = c;
+  st.data = { mode: 'candle', ...c };
   // Filter MA options whose window > candles count
   const total = (c.frozen?.length || 0) + (c.live ? 1 : 0);
   st.root.querySelectorAll('[data-ma]').forEach(cb => {
@@ -170,6 +210,7 @@ async function loadAndRender(station) {
 function draw(station) {
   const st = states.get(station);
   if (!st || !st.canvas || !st.data) return;
+  if (st.data.mode === 'raw') return drawRaw(station);
   const regression = st.regression && st.regression.unit === st.opts.unit ? st.regression : null;
   renderCandleChart(st.canvas, st.data, {
     ma: st.opts.ma,
@@ -179,6 +220,15 @@ function draw(station) {
   });
   // Record candle hit regions for tooltip lookup
   computeHitRegions(station);
+}
+
+function drawRaw(station) {
+  const st = states.get(station);
+  if (!st || !st.canvas || !st.data) return;
+  renderLineChart(st.canvas, st.data.samples || [], { scroll: true });
+  // Hide tooltip (line-chart tooltip is a future enhancement)
+  if (st.tooltip) st.tooltip.style.display = 'none';
+  st.regions = null;
 }
 
 async function runRegressionFor(station) {
@@ -228,6 +278,7 @@ async function runRegressionFor(station) {
 function applyLiveUpdate(station, payload) {
   const st = states.get(station);
   if (!st || !st.data) return;
+  if (st.data.mode === 'raw') return;  // raw 모드는 SSE candle 이벤트 무시 (직접 재조회로 갱신)
   if (payload.unit !== st.opts.unit) return;  // Ignore units not currently viewed
   if (payload.type === 'candle_update') {
     st.data.live = { bucket_key: payload.bucket_key, stats: payload.stats };

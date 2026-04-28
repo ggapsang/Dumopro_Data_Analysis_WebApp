@@ -49,6 +49,31 @@ async def fetch_samples_since(
     return [SampleRow(**dict(r)) for r in rows]
 
 
+async def fetch_samples_latest(
+    pool: asyncpg.Pool,
+    station_id: str,
+    measurement_type: str,
+    limit: int,
+) -> list[SampleRow]:
+    """Latest N samples in chronological order (oldest first of the N newest)."""
+    rows = await pool.fetch(
+        """
+        SELECT id, station_id::text AS station_id, measurement_type,
+               value, unit, sampled_at
+        FROM sensor_sample
+        WHERE station_id = $1::uuid
+          AND measurement_type = $2
+        ORDER BY id DESC
+        LIMIT $3
+        """,
+        station_id,
+        measurement_type,
+        limit,
+    )
+    # Reverse in Python so caller gets oldest→newest.
+    return [SampleRow(**dict(r)) for r in reversed(rows)]
+
+
 async def iter_all_samples(
     pool: asyncpg.Pool,
     station_id: str,

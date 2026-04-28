@@ -390,8 +390,148 @@ export function renderCandleChart(canvas, chartData, opts = {}) {
   }
 }
 
+// ---------- Line chart (raw samples) ----------
+
+const LINE_COLORS = {
+  line: '#1a4a7a',
+  point: '#1a4a7a',
+  axis: '#000000',
+  grid: '#dddddd',
+  label: '#444444',
+};
+
+/**
+ * Render a time-series line chart for raw samples.
+ * @param {HTMLCanvasElement} canvas
+ * @param {Array<{id:number, sampled_at:string, value:number}>} samples - chronological order
+ * @param {object} opts - { scroll?: boolean, showPoints?: boolean }
+ */
+export function renderLineChart(canvas, samples, opts = {}) {
+  const padL = 60, padR = 12, padT = 8, padB = 32;
+  const { ctx, width, height } = prepareCanvas(canvas, samples.length, padL, padR, !!opts.scroll);
+
+  if (!samples || samples.length === 0) {
+    ctx.fillStyle = '#888';
+    ctx.font = '11px "MS Sans Serif"';
+    ctx.fillText('(no samples)', 8, 18);
+    return;
+  }
+
+  const times = samples.map(s => new Date(s.sampled_at).getTime());
+  const values = samples.map(s => Number(s.value));
+  const xMin = times[0];
+  const xMax = times[times.length - 1];
+  const xRange = Math.max(1, xMax - xMin);
+
+  let ymin = +Infinity, ymax = -Infinity;
+  for (const v of values) {
+    if (v < ymin) ymin = v;
+    if (v > ymax) ymax = v;
+  }
+  const ys = niceScale(ymin, ymax);
+
+  const plotW = Math.max(1, width - padL - padR);
+  const plotH = Math.max(1, height - padT - padB);
+  const plotTop = padT;
+  const plotBottom = padT + plotH;
+  const xTo = t => padL + (t - xMin) / xRange * plotW;
+  const yTo = v => plotBottom - (v - ys.min) / (ys.max - ys.min) * plotH;
+
+  // Y grid + labels
+  ctx.strokeStyle = LINE_COLORS.grid;
+  ctx.lineWidth = 1;
+  ctx.font = '10px "Courier New"';
+  ctx.fillStyle = LINE_COLORS.label;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const gridSteps = 4;
+  for (let i = 0; i <= gridSteps; i++) {
+    const v = ys.min + (ys.max - ys.min) * i / gridSteps;
+    const y = yTo(v);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(3), padL - 3, y);
+  }
+
+  // Axes
+  ctx.strokeStyle = LINE_COLORS.axis;
+  ctx.beginPath();
+  ctx.moveTo(padL, plotTop);
+  ctx.lineTo(padL, plotBottom);
+  ctx.lineTo(padL + plotW, plotBottom);
+  ctx.stroke();
+
+  // Line segments
+  ctx.strokeStyle = LINE_COLORS.line;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < samples.length; i++) {
+    const x = xTo(times[i]);
+    const y = yTo(values[i]);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.lineWidth = 1;
+
+  // Point markers — skip if too many to avoid clutter
+  if (opts.showPoints !== false && samples.length <= 300) {
+    ctx.fillStyle = LINE_COLORS.point;
+    for (let i = 0; i < samples.length; i++) {
+      ctx.beginPath();
+      ctx.arc(xTo(times[i]), yTo(values[i]), 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // X labels — 5~8 evenly spaced ticks, with sampled_at formatted
+  const tickCount = Math.min(8, Math.max(2, Math.floor(plotW / 90)));
+  ctx.fillStyle = LINE_COLORS.label;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const sameDay = sameUtcDay(new Date(xMin), new Date(xMax));
+  for (let i = 0; i <= tickCount; i++) {
+    const t = xMin + (xRange * i) / tickCount;
+    const x = padL + plotW * i / tickCount;
+    const dt = new Date(t);
+    const label = sameDay ? fmtHMS(dt) : fmtMMDDHM(dt);
+    ctx.fillText(label, x, plotBottom + 4);
+  }
+  // Secondary label: show date range at bottom-left
+  if (!sameDay) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#888';
+    const d1 = fmtYMD(new Date(xMin));
+    const d2 = fmtYMD(new Date(xMax));
+    ctx.fillText(`${d1} ~ ${d2}  (n=${samples.length})`, padL, plotBottom + 18);
+  } else {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#888';
+    ctx.fillText(`${fmtYMD(new Date(xMin))}  (n=${samples.length})`, padL, plotBottom + 18);
+  }
+}
+
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+function fmtYMD(d) { return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; }
+function fmtHMS(d) { return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`; }
+function fmtMMDDHM(d) { return `${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`; }
+function sameUtcDay(a, b) {
+  return a.getUTCFullYear() === b.getUTCFullYear()
+    && a.getUTCMonth() === b.getUTCMonth()
+    && a.getUTCDate() === b.getUTCDate();
+}
+
+// ---------- Boxplot X label helpers ----------
+
 function fmtFull(key) { return key; }
 function fmtShort(key, unit) {
+  if (unit === 'hour') {
+    // "YYYY-MM-DDTHH" → "MM-DD HH"
+    if (key.length >= 13) return key.slice(5, 10) + ' ' + key.slice(11, 13);
+    return key;
+  }
   if (unit === 'day') return key.length >= 10 ? key.slice(5) : key;
   if (unit === 'week') { const i = key.indexOf('-W'); return i >= 0 ? key.slice(i + 1) : key; }
   if (unit === 'month') return key.length >= 7 ? key.slice(5) : key;

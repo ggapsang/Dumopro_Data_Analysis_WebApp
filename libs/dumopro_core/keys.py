@@ -1,6 +1,6 @@
 from typing import Literal
 
-Unit = Literal["day", "week", "month"]
+Unit = Literal["hour", "day", "week", "month"]
 Target = Literal["median", "max", "q3"]
 
 

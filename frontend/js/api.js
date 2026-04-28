@@ -16,6 +16,12 @@ export async function getHealth() {
   return r.json();
 }
 
+export async function getRawSamples(station, limit = 500) {
+  const r = await fetch(`/api/raw/${encodeURIComponent(station)}?limit=${limit}`);
+  if (!r.ok) throw new Error('raw: ' + r.status);
+  return r.json();
+}
+
 export async function getSettings() {
   const r = await fetch('/api/settings');
   if (!r.ok) throw new Error('settings: ' + r.status);

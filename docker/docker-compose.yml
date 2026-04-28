@@ -77,8 +77,10 @@ services:
       dockerfile: apps/api/Dockerfile
     container_name: dumopro-api
     environment:
+      PG_DSN: "postgresql://gw_reader:dev_reader_pw@postgres:5432/gateway_db"
       REDIS_URL: "redis://dumopro-redis:6379/0"
       API_PORT: "9105"
+      MEASUREMENT_TYPE: "dust_concentration"
     ports:
       - "9105:9105"
     depends_on:

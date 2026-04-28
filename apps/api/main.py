@@ -8,9 +8,10 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from dumopro_core.config import get_settings
+from dumopro_core.db import init_pool
 from dumopro_core.redis_client import RedisClient
 
-from .routes import chart, health, regression, settings as settings_route, stations, stream
+from .routes import chart, health, raw, regression, settings as settings_route, stations, stream
 from .services.sse_broadcaster import Broadcaster
 
 logging.basicConfig(
@@ -29,14 +30,17 @@ async def lifespan(app: FastAPI):
     redis = RedisClient(settings.redis_url)
     await redis.ping()
     broadcaster = Broadcaster(redis)
+    pool = await init_pool(settings.pg_dsn, min_size=1, max_size=3)
     app.state.redis = redis
     app.state.broadcaster = broadcaster
+    app.state.pool = pool
     app.state.settings = settings
     try:
         yield
     finally:
         await broadcaster.close()
         await redis.close()
+        await pool.close()
 
 
 def create_app() -> FastAPI:
@@ -47,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(stream.router)
     app.include_router(regression.router)
     app.include_router(settings_route.router)
+    app.include_router(raw.router)
 
     if FRONTEND_DIR.exists():
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

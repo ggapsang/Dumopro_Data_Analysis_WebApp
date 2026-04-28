@@ -1,14 +1,19 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-Unit = Literal["day", "week", "month"]
-UNIT_LIST: tuple[Unit, ...] = ("day", "week", "month")
+Unit = Literal["hour", "day", "week", "month"]
+UNIT_LIST: tuple[Unit, ...] = ("hour", "day", "week", "month")
 
 
 def _as_utc(ts: datetime) -> datetime:
     if ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc)
+
+
+def bucket_key_hour(ts: datetime) -> str:
+    ts = _as_utc(ts)
+    return ts.strftime("%Y-%m-%dT%H")
 
 
 def bucket_key_day(ts: datetime) -> str:
@@ -28,6 +33,8 @@ def bucket_key_month(ts: datetime) -> str:
 
 
 def bucket_key(ts: datetime, unit: Unit) -> str:
+    if unit == "hour":
+        return bucket_key_hour(ts)
     if unit == "day":
         return bucket_key_day(ts)
     if unit == "week":
@@ -39,6 +46,7 @@ def bucket_key(ts: datetime, unit: Unit) -> str:
 
 def all_bucket_keys(ts: datetime) -> dict[str, str]:
     return {
+        "hour": bucket_key_hour(ts),
         "day": bucket_key_day(ts),
         "week": bucket_key_week(ts),
         "month": bucket_key_month(ts),
@@ -48,7 +56,9 @@ def all_bucket_keys(ts: datetime) -> dict[str, str]:
 def bucket_score(ts: datetime, unit: Unit) -> float:
     """ZSET score for `frozen:index:*`. Use the UTC epoch seconds of the bucket start."""
     ts = _as_utc(ts)
-    if unit == "day":
+    if unit == "hour":
+        start = datetime(ts.year, ts.month, ts.day, ts.hour, tzinfo=timezone.utc)
+    elif unit == "day":
         start = datetime(ts.year, ts.month, ts.day, tzinfo=timezone.utc)
     elif unit == "week":
         iso_year, iso_week, _ = ts.isocalendar()
